@@ -1,328 +1,219 @@
 const {
   Client,
   GatewayIntentBits,
-  Partials,
   ChannelType,
   PermissionsBitField,
   EmbedBuilder,
   ActionRowBuilder,
   ButtonBuilder,
-  ButtonStyle,
+  ButtonStyle
 } = require("discord.js");
 
 const config = require("./config.json");
 
-const CONTROL_PANEL_CHANNEL_ID = "1439244974842449960"; // ⭐ روم لوحة التحكم الثابتة
-
-// ===== Client Setup =====
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildVoiceStates,
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
-  ],
-  partials: [Partials.Channel],
+    GatewayIntentBits.MessageContent
+  ]
 });
 
 console.log("🚀 Starting MAGLS Temp Room Bot...");
 
-// Temp Room Maps
-const roomsByOwner = new Map();
-const roomsByVoiceId = new Map();
+const rooms = new Map(); // ownerId → data
 
-client.once("clientReady", () => {
+client.once("ready", () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
 });
 
-// ===== Create Temp Room =====
-async function createTempRoom(member, lobbyChannel) {
+
+// =======================
+// Create Temp Room
+// =======================
+async function createTempRoom(member) {
   const guild = member.guild;
 
-  if (roomsByOwner.has(member.id)) {
-    const info = roomsByOwner.get(member.id);
-    const existing = guild.channels.cache.get(info.voiceChannelId);
-    if (existing) {
-      await member.voice.setChannel(existing).catch(() => {});
-      return info;
+  if (rooms.has(member.id)) {
+    const info = rooms.get(member.id);
+    const vc = guild.channels.cache.get(info.voiceId);
+    if (vc) {
+      member.voice.setChannel(vc).catch(() => {});
+      return;
     }
   }
 
-  const parentId =
-    config.categoryId && config.categoryId !== "null"
-      ? config.categoryId
-      : lobbyChannel.parentId;
-
-  const displayName = member.displayName || member.user.username;
-
-  // ===== Create Temp Voice Channel =====
-  const voiceChannel = await guild.channels.create({
-    name: `👑・MAGLS — ${displayName}`,
+  // Create Voice Room
+  const voice = await guild.channels.create({
+    name: `👑 MAGLS — ${member.displayName}`,
     type: ChannelType.GuildVoice,
-    parent: parentId || null,
+    parent: config.categoryId,
     permissionOverwrites: [
       {
         id: guild.roles.everyone,
-        allow: [
-          PermissionsBitField.Flags.ViewChannel,
-          PermissionsBitField.Flags.Connect,
-          PermissionsBitField.Flags.Speak,
-        ],
+        allow: ["ViewChannel", "Connect", "Speak"]
       },
       {
         id: member.id,
-        allow: [
-          PermissionsBitField.Flags.ViewChannel,
-          PermissionsBitField.Flags.Connect,
-          PermissionsBitField.Flags.Speak,
-          PermissionsBitField.Flags.MuteMembers,
-          PermissionsBitField.Flags.DeafenMembers,
-          PermissionsBitField.Flags.MoveMembers,
-          PermissionsBitField.Flags.ManageChannels,
-        ],
+        allow: ["ViewChannel", "Connect", "Speak", "MuteMembers", "MoveMembers"]
       },
       {
         id: client.user.id,
-        allow: [
-          PermissionsBitField.Flags.ViewChannel,
-          PermissionsBitField.Flags.Connect,
-          PermissionsBitField.Flags.Speak,
-          PermissionsBitField.Flags.MuteMembers,
-          PermissionsBitField.Flags.DeafenMembers,
-          PermissionsBitField.Flags.MoveMembers,
-          PermissionsBitField.Flags.ManageChannels,
-        ],
-      },
-    ],
+        allow: ["ViewChannel", "Connect", "Speak", "MuteMembers", "ManageChannels"]
+      }
+    ]
   });
 
-  const info = {
-    guildId: guild.id,
+  // ==========================
+  // Create Linked TEXT (THREAD)
+  // ==========================
+  const thread = await guild.channels.create({
+    name: `💬・MAGLS — ${member.displayName}`,
+    type: ChannelType.PrivateThread,
+    invitable: false,
+    parent: voice
+  });
+
+  await thread.members.add(member.id);
+  await thread.members.add(client.user.id);
+
+  // Save room data
+  rooms.set(member.id, {
     ownerId: member.id,
-    voiceChannelId: voiceChannel.id,
-  };
+    voiceId: voice.id,
+    threadId: thread.id
+  });
 
-  roomsByOwner.set(member.id, info);
-  roomsByVoiceId.set(voiceChannel.id, info);
+  await member.voice.setChannel(voice).catch(() => {});
 
-  await member.voice.setChannel(voiceChannel).catch(() => {});
-
-  // Send panel into fixed control panel room
-  setTimeout(() => {
-    sendControlPanel(member, voiceChannel);
-  }, 1000);
-
-  return info;
+  // ===== Send Control Panel =====
+  sendControlPanel(thread, member, voice);
 }
 
-// ===== Send Control Panel to Fixed Channel =====
-async function sendControlPanel(owner, voiceChannel) {
-  const channel = await owner.guild.channels.fetch(CONTROL_PANEL_CHANNEL_ID).catch(() => null);
 
-  if (!channel)
-    return console.error("❌ Cannot find control panel channel.");
 
+// =======================
+// Control Panel
+// =======================
+async function sendControlPanel(thread, owner, voiceChannel) {
   const embed = new EmbedBuilder()
-    .setTitle("👑 لوحة تحكم الروم المؤقت")
+    .setColor(0xf1c40f)
+    .setTitle("👑 لوحة التحكم بالروم الصوتي")
     .setDescription(
-      [
-        `الروم الخاص بـ **${owner.displayName}**`,
-        `🎤 رومك الصوتي: <#${voiceChannel.id}>`,
-        "",
-        "🔇 **Mute All**",
-        "🔊 **Unmute All**",
-        "🔒 **Lock Room**",
-        "🔓 **Unlock Room**",
-        "👁 **Hide Room**",
-        "💬 **Show Room**",
-        "🚫 **Kick All**",
-        "❌ **Close Room**",
-      ].join("\n")
-    )
-    .setColor(0xf1c40f);
+      `يمكنك التحكم في الروم الخاص بك من خلال الأزرار أدناه:\n\nصاحب الروم: **${owner.displayName}**`
+    );
 
   const row1 = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId(`mute_${voiceChannel.id}`)
-      .setLabel("Mute All")
-      .setStyle(ButtonStyle.Danger)
-      .setEmoji("🔇"),
-
-    new ButtonBuilder()
-      .setCustomId(`unmute_${voiceChannel.id}`)
-      .setLabel("Unmute All")
-      .setStyle(ButtonStyle.Success)
-      .setEmoji("🔊")
+    new ButtonBuilder().setCustomId("mute_all").setLabel("كتم الكل").setStyle(ButtonStyle.Danger),
+    new ButtonBuilder().setCustomId("unmute_all").setLabel("فك الكتم").setStyle(ButtonStyle.Success)
   );
 
   const row2 = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId(`lock_${voiceChannel.id}`)
-      .setLabel("Lock")
-      .setStyle(ButtonStyle.Secondary)
-      .setEmoji("🔒"),
-
-    new ButtonBuilder()
-      .setCustomId(`unlock_${voiceChannel.id}`)
-      .setLabel("Unlock")
-      .setStyle(ButtonStyle.Secondary)
-      .setEmoji("🔓")
+    new ButtonBuilder().setCustomId("lock").setLabel("قفل").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId("unlock").setLabel("فتح").setStyle(ButtonStyle.Secondary)
   );
 
   const row3 = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId(`hide_${voiceChannel.id}`)
-      .setLabel("Hide")
-      .setStyle(ButtonStyle.Secondary)
-      .setEmoji("👁"),
-
-    new ButtonBuilder()
-      .setCustomId(`show_${voiceChannel.id}`)
-      .setLabel("Show Room")
-      .setStyle(ButtonStyle.Secondary)
+    new ButtonBuilder().setCustomId("hide").setLabel("إخفاء").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId("show").setLabel("إظهار").setStyle(ButtonStyle.Secondary)
   );
 
   const row4 = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId(`kick_${voiceChannel.id}`)
-      .setLabel("Kick All")
-      .setStyle(ButtonStyle.Danger)
-      .setEmoji("🚫"),
-
-    new ButtonBuilder()
-      .setCustomId(`close_${voiceChannel.id}`)
-      .setLabel("Close Room")
-      .setStyle(ButtonStyle.Danger)
-      .setEmoji("❌")
+    new ButtonBuilder().setCustomId("kick_all").setLabel("طرد الكل").setStyle(ButtonStyle.Danger),
+    new ButtonBuilder().setCustomId("close").setLabel("إنهاء الروم").setStyle(ButtonStyle.Danger)
   );
 
-  await channel.send({
-    content: `👑 **${owner}** تحكم برومك الصوتي: <#${voiceChannel.id}>`,
+  await thread.send({
+    content: `👑 <@${owner.id}> | لوحة التحكم الخاصة بك:`,
     embeds: [embed],
-    components: [row1, row2, row3, row4],
+    components: [row1, row2, row3, row4]
   });
 }
 
-// ===== Delete Temp Room =====
-async function deleteTempRoom(info) {
-  try {
-    const guild = client.guilds.cache.get(info.guildId);
-    if (!guild) return;
 
-    const voiceChannel = guild.channels.cache.get(info.voiceChannelId);
 
-    if (voiceChannel) await voiceChannel.delete().catch(() => {});
-
-    roomsByOwner.delete(info.ownerId);
-    roomsByVoiceId.delete(info.voiceChannelId);
-
-    console.log(`🗑️ Temp room deleted for owner ${info.ownerId}`);
-  } catch {}
-}
-
-// ===== Voice State =====
-client.on("voiceStateUpdate", async (oldState, newState) => {
-  try {
-    const guild = newState.guild || oldState.guild;
-    if (!guild || guild.id !== config.guildId) return;
-
-    const lobbyId = config.lobbyVoiceChannelId;
-
-    const oldChannelId = oldState.channelId;
-    const newChannelId = newState.channelId;
-
-    if (newChannelId === lobbyId && oldChannelId !== lobbyId) {
-      const member = newState.member;
-      if (!member || member.user.bot) return;
-      await createTempRoom(member, newState.channel);
-      return;
-    }
-
-    if (oldChannelId && roomsByVoiceId.has(oldChannelId)) {
-      const info = roomsByVoiceId.get(oldChannelId);
-      if (!oldState.channel) return;
-
-      const nonBotMembers = oldState.channel.members.filter(
-        (m) => !m.user.bot
-      );
-
-      if (nonBotMembers.size === 0) {
-        await deleteTempRoom(info);
-      }
-    }
-  } catch (err) {
-    console.error("Error in voiceStateUpdate:", err);
-  }
-});
-
-// ===== Interaction Handler =====
+// =======================
+// Button Actions
+// =======================
 client.on("interactionCreate", async (interaction) => {
   if (!interaction.isButton()) return;
 
-  const id = interaction.customId.split("_");
-  const action = id[0];
-  const voiceId = id[1];
+  const info = [...rooms.values()].find(r => r.threadId === interaction.channelId);
+  if (!info) return;
 
-  const voiceChannel = interaction.guild.channels.cache.get(voiceId);
-  if (!voiceChannel)
-    return interaction.reply({ content: "❌ الروم غير موجود.", ephemeral: true });
+  if (interaction.user.id !== info.ownerId)
+    return interaction.reply({ content: "❌ فقط صاحب الروم يمكنه استخدام اللوحة.", ephemeral: true });
 
-  const member = interaction.guild.members.cache.get(interaction.user.id);
-  const info = roomsByOwner.get(member.id);
+  const guild = interaction.guild;
+  const voice = guild.channels.cache.get(info.voiceId);
 
-  if (!info || info.voiceChannelId !== voiceChannel.id) {
-    return interaction.reply({
-      content: "❌ لا يمكنك التحكم بهذا الروم، لأنه ليس رومك.",
-      ephemeral: true,
-    });
-  }
-
-  const everyone = interaction.guild.roles.everyone;
-
-  switch (action) {
-    case "mute":
-      voiceChannel.members.forEach((m) => {
-        if (m.id !== info.ownerId && !m.user.bot)
-          m.voice.setMute(true).catch(() => {});
+  switch (interaction.customId) {
+    case "mute_all":
+      voice.members.forEach(m => {
+        if (m.id !== info.ownerId) m.voice.setMute(true).catch(() => {});
       });
       return interaction.reply({ content: "🔇 تم كتم الجميع.", ephemeral: true });
 
-    case "unmute":
-      voiceChannel.members.forEach((m) => {
-        if (!m.user.bot) m.voice.setMute(false).catch(() => {});
-      });
+    case "unmute_all":
+      voice.members.forEach(m => m.voice.setMute(false).catch(() => {}));
       return interaction.reply({ content: "🔊 تم فك الكتم.", ephemeral: true });
 
     case "lock":
-      await voiceChannel.permissionOverwrites.edit(everyone, { Connect: false });
+      await voice.permissionOverwrites.edit(guild.roles.everyone, { Connect: false });
       return interaction.reply({ content: "🔒 تم قفل الروم.", ephemeral: true });
 
     case "unlock":
-      await voiceChannel.permissionOverwrites.edit(everyone, { Connect: true });
+      await voice.permissionOverwrites.edit(guild.roles.everyone, { Connect: true });
       return interaction.reply({ content: "🔓 تم فتح الروم.", ephemeral: true });
 
     case "hide":
-      await voiceChannel.permissionOverwrites.edit(everyone, { ViewChannel: false });
-      return interaction.reply({ content: "👁 تم إخفاء الروم.", ephemeral: true });
+      await voice.permissionOverwrites.edit(guild.roles.everyone, { ViewChannel: false });
+      return interaction.reply({ content: "👁️ تم إخفاء الروم.", ephemeral: true });
 
     case "show":
-      await voiceChannel.permissionOverwrites.edit(everyone, { ViewChannel: true });
-      return interaction.reply({ content: "💬 تم إظهار الروم.", ephemeral: true });
+      await voice.permissionOverwrites.edit(guild.roles.everyone, { ViewChannel: true });
+      return interaction.reply({ content: "تم إظهار الروم.", ephemeral: true });
 
-    case "kick":
-      voiceChannel.members.forEach((m) => {
-        if (m.id !== info.ownerId && !m.user.bot)
-          m.voice.disconnect().catch(() => {});
+    case "kick_all":
+      voice.members.forEach(m => {
+        if (m.id !== info.ownerId) m.voice.disconnect().catch(() => {});
       });
       return interaction.reply({ content: "🚫 تم طرد الجميع.", ephemeral: true });
 
     case "close":
-      await interaction.reply({ content: "❌ تم حذف الروم.", ephemeral: true });
-      await deleteTempRoom(info);
-      return;
+      voice.delete().catch(() => {});
+      interaction.channel.delete().catch(() => {});
+      rooms.delete(info.ownerId);
+      return interaction.reply({ content: "❌ تم حذف الروم.", ephemeral: true });
   }
 });
 
-// ===== Login =====
+
+
+// =======================
+// Voice State Handler
+// =======================
+client.on("voiceStateUpdate", async (oldState, newState) => {
+  if (newState.channelId === config.lobbyId) {
+    if (!newState.member.user.bot) createTempRoom(newState.member);
+  }
+
+  // Delete when empty
+  if (rooms.has(oldState.member.id)) {
+    const data = rooms.get(oldState.member.id);
+    const vc = oldState.guild.channels.cache.get(data.voiceId);
+
+    if (vc && vc.members.filter(m => !m.user.bot).size === 0) {
+      vc.delete().catch(() => {});
+      oldState.guild.channels.cache.get(data.threadId)?.delete().catch(() => {});
+      rooms.delete(oldState.member.id);
+    }
+  }
+});
+
+
+
+// =======================
 client.login(config.token);
